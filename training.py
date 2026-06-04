@@ -1,94 +1,50 @@
 import os
 import pickle
-import numpy as np
 import pandas as pd
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, mean_absolute_error, mean_squared_error
+try:
+    from prediction import train_classifier, train_regressor
+except ImportError:
+    # หากฟังก์ชันเทรนอยู่ในไฟล์ชื่ออื่น สามารถเปลี่ยนคำว่า prediction เป็นชื่อไฟล์นั้นได้เลยครับ
+    raise ModuleNotFoundError("หาฟังก์ชันเทรนไม่พบ กรุณาตรวจสอบว่าฟังก์ชัน train_classifier อยู่ในไฟล์ไหนในโฟลเดอร์ของคุณ")
 
-
-def train_classifier(df):
-    customer = (
-        df.groupby("CustomerKey")
-        .agg({
-            "Sales Amount": "sum",
-            "Country": "first"
-        })
-        .reset_index()
-    )
-
-    median_sales = customer["Sales Amount"].median()
-    customer["Buy"] = (customer["Sales Amount"] > median_sales).astype(int)
-
-    X = pd.get_dummies(customer[["Country"]], drop_first=True)
-    y = customer["Buy"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-    # ปรับลดความซับซ้อนเพื่อประหยัด RAM บน Render
-    clf = RandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
-    clf.fit(X_train, y_train)
-    pred = clf.predict(X_test)
-    acc = accuracy_score(y_test, pred)
-
-    return clf, acc, X.columns
-
-
-def train_regressor(df):
-    X = pd.get_dummies(
-        df[["Country", "Category", "List Price", "Order Quantity"]],
-        drop_first=True
-    )
-    y = df["Sales Amount"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-    # ปรับลดความซับซ้อนเพื่อประหยัด RAM บน Render
-    reg = RandomForestRegressor(n_estimators=50, max_depth=10, random_state=42, n_jobs=-1)
-    reg.fit(X_train, y_train)
-    pred = reg.predict(X_test)
-
-    mae = mean_absolute_error(y_test, pred)
-    rmse = np.sqrt(mean_squared_error(y_test, pred))
-
-    return reg, mae, rmse, X.columns
-
-
-# ==========================================
-# 🧪 สั่งเจนไฟล์โมเดลสำเร็จรูปออกมาใช้งาน (.pkl)
-# ==========================================
 if __name__ == "__main__":
-    print("⏳ กำลังโหลดข้อมูลและสร้างไฟล์โมเดลสำเร็จรูป...")
-    
+    print("⏳ กำลังเริ่มดาวน์โหลดข้อมูลและทดสอบระบบการเทรนบนเครื่องคอมพิวเตอร์...")
+
+    # ดึงฟังก์ชันจัดการข้อมูลจาก app.py มาใช้งานทดสอบ
     try:
         from app import build_data
         df = build_data()
-        print("✅ ดึงข้อมูลสำเร็จขนาด:", df.shape)
+        print("✅ โหลดและรวมตารางข้อมูลสำเร็จ ขนาดข้อมูลหลัก:", df.shape)
     except Exception as e:
-        print("❌ ดึงข้อมูลไม่สำเร็จ:", e)
+        print("❌ เกิดข้อผิดพลาดขณะโหลดข้อมูลจาก app.py:", e)
         exit(1)
 
-    # คำสั่งสร้างโฟลเดอร์ models บนเครื่องคอมพิวเตอร์ของคุณ
-    os.makedirs("models", exist_ok=True)
-
-    # 1. บันทึก Classifier
+    # 1. ทดสอบโครงสร้างและการเทรน Classifier พร้อมสั่งบันทึกไฟล์เซฟโมเดล
+    print("\n--- 1. Testing Random Forest Classifier ---")
     clf, acc, clf_cols = train_classifier(df)
-    with open("models/classifier.pkl", "wb") as f:
-        pickle.dump(clf, f)
-    with open("models/clf_cols.pkl", "wb") as f:
-        pickle.dump(list(clf_cols), f)
-
-    # 2. บันทึก Regressor
-    reg, mae, rmse, reg_cols = train_regressor(df)
-    with open("models/regressor.pkl", "wb") as f:
-        pickle.dump(reg, f)
-    with open("models/reg_cols.pkl", "wb") as f:
-        pickle.dump(list(reg_cols), f)
+    print(f"📈 Model Accuracy Score: {acc * 100:.2f}%")
+    print(f"📊 Features used count: {len(clf_cols)}")
     
-    print("\n🎉 บันทึกไฟล์ป้อนข้อมูลสำเร็จ! คุณจะพบโฟลเดอร์ชื่อ 'models' ในโปรเจกต์ของคุณแล้วครับ")
+    # สั่งบันทึกไฟล์ผลลัพธ์ลงเครื่องคอมพิวเตอร์ของคุณ
+    with open("classifier.pkl", "wb") as f:
+        pickle.dump(clf, f)
+    with open("clf_cols.pkl", "wb") as f:
+        pickle.dump(clf_cols, f)
+    print("💾 บันทึกไฟล์ classifier.pkl และ clf_cols.pkl เรียบร้อย!")
+
+    # 2. ทดสอบโครงสร้างและการเทรน Regressor พร้อมสั่งบันทึกไฟล์เซฟโมเดล
+    print("\n--- 2. Testing Random Forest Regressor ---")
+    reg, mae, rmse, reg_cols = train_regressor(df)
+    print(f"📉 Model MAE (Mean Absolute Error): ${mae:,.2f}")
+    print(f"📉 Model RMSE (Root Mean Squared Error): ${rmse:,.2f}")
+    print(f"📊 Features used count: {len(reg_cols)}")
+    
+    # สั่งบันทึกไฟล์ผลลัพธ์ลงเครื่องคอมพิวเตอร์ของคุณ
+    with open("regressor.pkl", "wb") as f:
+        pickle.dump(reg, f)
+    with open("reg_cols.pkl", "wb") as f:
+        pickle.dump(reg_cols, f)
+    print("💾 บันทึกไฟล์ regressor.pkl และ reg_cols.pkl เรียบร้อย!")
+
+    print("\n🎉 ระบบโมเดล Machine Learning ทำงานได้สมบูรณ์แบบ 100% และเซฟไฟล์เรียบร้อย!")

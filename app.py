@@ -17,10 +17,12 @@ from prediction import (
 
 app = Flask(__name__)
 
+# URL ตรงไปยังโฟลเดอร์หลักของ GitHub Repository
 RAW = "https://raw.githubusercontent.com/apcyssr/AdventureSale/main/"
 
 
 def load(name):
+    # ดึงข้อมูลจาก URL หลักตรงๆ ไม่ผ่านโฟลเดอร์ย่อย
     return pd.read_csv(RAW + name)
 
 
@@ -54,34 +56,39 @@ def build_data():
 
 @app.route("/", methods=["GET", "POST"])
 def dashboard():
-    df = build_data()
+    try:
+        df = build_data()
+    except Exception as e:
+        return f"<h3>Database Connection Error: ไม่สามารถโหลดข้อมูลจาก GitHub ได้</h3><p>{str(e)}</p>"
 
     # ========================================================
-    # 💾 โฮสต์และโหลดโมเดลสำเร็จรูปจากไฟล์เพื่อเซฟหน่วยความจำ (RAM) บน Render
+    # 💾 โหลดไฟล์โมเดลสำเร็จรูปจากโฟลเดอร์หลัก (Root Directory)
     # ========================================================
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
-    # 1. โหลดไฟล์ Classifier (.pkl) และกำหนดค่า Accuracy ประเมินผลจริงของคุณ
-    with open(os.path.join(BASE_DIR, "models/classifier.pkl"), "rb") as f:
-        clf = pickle.load(f)
-    with open(os.path.join(BASE_DIR, "models/clf_cols.pkl"), "rb") as f:
-        clf_cols = pickle.load(f)
-    acc = 0.5519  # แมปผลลัพธ์จริงจากการรันโมเดลสำเร็จรูปบนเครื่องคอมพิวเตอร์ของคุณ
+    try:
+        # 1. โหลดไฟล์ Classifier จากโฟลเดอร์หลักตรงๆ
+        with open(os.path.join(BASE_DIR, "classifier.pkl"), "rb") as f:
+            clf = pickle.load(f)
+        with open(os.path.join(BASE_DIR, "clf_cols.pkl"), "rb") as f:
+            clf_cols = pickle.load(f)
+        acc = 0.5519  
 
-    # 2. โหลดไฟล์ Regressor (.pkl) และกำหนดค่าความคลาดเคลื่อนจริงของคุณ
-    with open(os.path.join(BASE_DIR, "models/regressor.pkl"), "rb") as f:
-        reg = pickle.load(f)
-    with open(os.path.join(BASE_DIR, "models/reg_cols.pkl"), "rb") as f:
-        reg_cols = pickle.load(f)
-    mae = 28.44   # แมปผลลัพธ์จริงจากการรันโมเดลสำเร็จรูปบนเครื่องคอมพิวเตอร์ของคุณ
-    rmse = 84.92  # แมปผลลัพธ์จริงจากการรันโมเดลสำเร็จรูปบนเครื่องคอมพิวเตอร์ของคุณ
+        # 2. โหลดไฟล์ Regressor จากโฟลเดอร์หลักตรงๆ
+        with open(os.path.join(BASE_DIR, "regressor.pkl"), "rb") as f:
+            reg = pickle.load(f)
+        with open(os.path.join(BASE_DIR, "reg_cols.pkl"), "rb") as f:
+            reg_cols = pickle.load(f)
+        mae = 28.44   
+        rmse = 84.92  
+    except Exception as e:
+        return f"<h3>Model Loading Error: ไม่พบไฟล์โมเดล .pkl ในโฟลเดอร์หลัก</h3><p>{str(e)}</p>"
     # ========================================================
 
     total_sales = df["Sales Amount"].sum()
     total_customers = df["CustomerKey"].nunique()
     total_products = df["ProductKey"].nunique()
 
-    # เจนข้อมูลกลุ่มตัวแปรที่มีจริงทำ Dynamic Dropdown Selection เพื่อป้องกันการพิมพ์ผิด
     unique_countries = sorted(df["Country"].dropna().unique().tolist())
     unique_categories = sorted(df["Category"].dropna().unique().tolist())
 
@@ -133,7 +140,6 @@ def dashboard():
         .reset_index(name="Count")
     )
 
-    # ปรับสีกราฟให้เข้าชุด คลีน สบายตา สไตล์โมเดิร์นแดชบอร์ด
     fig1 = px.bar(
         country_sales,
         x="Country",
@@ -171,7 +177,6 @@ def dashboard():
         color_discrete_sequence=["#3b82f6", "#6366f1", "#94a3b8"]
     )
 
-    # สร้าง Block ผลลัพธ์เริ่มต้นและกำหนดตัวแปรให้สัมพันธ์กับฟอร์ม
     buy_result_html = ""
     sales_result_html = ""
     
@@ -227,12 +232,10 @@ def dashboard():
             </div>
             """
     
-    # เจนตารางตัวเลือก Dropdowns สัมพันธ์กับค่าที่เคยกดเลือก
     country_options_buy = "".join([f'<option value="{c}" {"selected" if c==selected_country_buy else ""}>{c}</option>' for c in unique_countries])
     country_options_sales = "".join([f'<option value="{c}" {"selected" if c==selected_country_sales else ""}>{c}</option>' for c in unique_countries])
     category_options = "".join([f'<option value="{c}" {"selected" if c==selected_category else ""}>{c}</option>' for c in unique_categories])
 
-    # ส่งออกหน้าโครงสร้าง HTML โดยใช้ f-string แสดงตัวแปรแบบเรียลไทม์
     html = f"""
     <html>
     <head>
@@ -370,8 +373,8 @@ def dashboard():
                 </div>
                 <div style="font-size: 0.88rem; color: #475569; line-height: 1.6;">
                     <strong>💡 CRM Strategic Core Insights:</strong><br>
-                    • <strong>Automated Campaigning:</strong> The model automatically segments and targets high-potential customer bases within individual countries, significantly reducing generalized marketing waste and maximizing ROI.<br>
-                    • <strong>Risk Management & Operations:</strong> Statistical deviation metrics (MAE/RMSE) serve as data-driven benchmarks for safety stock optimization, preventing overproduction and inventory holding costs in high-volatility markets.
+                    • <strong>Automated Campaigning:</strong> The model automatically segments and targets high-potential customer bases within individual countries, significantly reducing generalized marketing waste.<br>
+                    • <strong>Risk Management & Operations:</strong> Statistical deviation metrics serve as data-driven benchmarks for safety stock optimization, preventing overproduction.
                 </div>
             </div>
         </div>
@@ -384,10 +387,9 @@ def dashboard():
 
 
 if __name__ == "__main__":
-    # Hugging Face จะส่งพอร์ตมาให้ผ่าน os.environ ถ้าไม่มีให้สลับไปใช้ 7860
     port = int(os.environ.get("PORT", 7860))
     app.run(
         host="0.0.0.0",
         port=port,
-        debug=False # ขึ้น Production ควรปิด debug ครับ
+        debug=False
     )
