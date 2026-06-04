@@ -1,213 +1,400 @@
 import os
 import pandas as pd
-import numpy as np
-from flask import Flask, render_template_string, jsonify
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, mean_absolute_error, root_mean_squared_error
+import plotly.express as px
+
+from flask import Flask
+from flask import request
+
+from preprocessing import (
+    clean_currency,
+    clean_data
+)
+
+from training import (
+    train_classifier,
+    train_regressor
+)
+
+from prediction import (
+    predict_buy,
+    predict_sales
+)
 
 app = Flask(__name__)
 
-# ดึงข้อมูลตรงจาก Raw GitHub Repository ของคุณ
-RAW_BASE_URL = "https://raw.githubusercontent.com/apcyssr/Adventure-Sales/main/"
+RAW = "https://raw.githubusercontent.com/apcyssr/AdventureSale/main/"
 
-def process_data_and_train():
-    try:
-        # 1. Data Loading (ดึงไฟล์จริงจาก GitHub ของคุณ)
-        print("Loading live CSV files according to your data model...")
-        df_sales = pd.read_csv(RAW_BASE_URL + "AdventureWorks%20Sales.xlsx%20-%20Sales_data.csv")
-        df_order = pd.read_csv(RAW_BASE_URL + "AdventureWorks%20Sales.xlsx%20-%20Sales%20Order_data.csv")
-        df_product = pd.read_csv(RAW_BASE_URL + "AdventureWorks%20Sales.xlsx%20-%20Product_data.csv")
-        df_territory = pd.read_csv(RAW_BASE_URL + "AdventureWorks%20Sales.xlsx%20-%20Sales%20Territory_data.csv")
-        df_customer = pd.read_csv(RAW_BASE_URL + "AdventureWorks%20Sales.xlsx%20-%20Customer_data.csv")
 
-        # 2. Data Preprocessing (ทำความสะอาดข้อมูลตามบรีฟ)
-        df_sales = df_sales.dropna(subset=['Sales Amount', 'ProductKey']).drop_duplicates()
-        df_order = df_order.dropna().drop_duplicates()
-        df_product = df_product.dropna().drop_duplicates()
-        df_territory = df_territory.dropna().drop_duplicates()
-        df_customer = df_customer.dropna().drop_duplicates()
+def load(name):
+    return pd.read_csv(RAW + name)
 
-        # 3. Data Merge (แก้ไขจุดสะกดผิดตามโครงสร้างตารางจริงของคุณ)
-        # Sales -> Sales Order (ใช้ SalesOrderLineKey)
-        df_merged = pd.merge(df_sales, df_order, on="SalesOrderLineKey", how="inner")
-        
-        # Sales -> Product (ใช้ ProductKey)
-        df_merged = pd.merge(df_merged, df_product, on="ProductKey", how="inner")
-        
-        # 🔥 จุดแก้ไข: เชื่อมตาราง Territory เนื่องจากชื่อคอลัมน์ในตาราง Sales กับ Territory สะกดไม่เหมือนกัน
-        # df_sales ใช้ 'SalesTerritoryKey' แต่ df_territory ใช้ 'Sales Territory Key'
-        df_merged = pd.merge(
-            df_merged, 
-            df_territory, 
-            left_on="SalesTerritoryKey", 
-            right_on="Sales Territory Key", 
-            how="inner"
+
+def build_data():
+
+    sales = load("Sales_data.csv")
+    order = load("Sales_Order_data.csv")
+    product = load("Product_data.csv")
+    customer = load("Customer_data.csv")
+    territory = load("Sales_Territory_data.csv")
+    date = load("Date_data.csv")
+
+    sales = clean_currency(sales)
+    product = clean_currency(product)
+
+    df = (
+        sales
+        .merge(order, on="SalesOrderLineKey")
+        .merge(product, on="ProductKey")
+        .merge(customer, on="CustomerKey")
+        .merge(territory, on="SalesTerritoryKey")
+        .merge(
+            date,
+            left_on="OrderDateKey",
+            right_on="DateKey"
         )
-        
-        # 4. EDA Metrics Calculation (คำนวณตัวเลขทางธุรกิจจากดาต้าเซ็ตจริง)
-        actual_total_sales = df_merged['Sales Amount'].sum()
-        total_sales_val = f"${(actual_total_sales / 1_000_000):.2f}M"
-        
-        top_country = df_merged['Country'].value_counts().idxmax()
-        top_cat = df_merged['Category'].value_counts().idxmax()
-        total_cust_val = f"{df_customer['CustomerKey'].nunique():,}"
+    )
 
-        # 5. ML Pipeline (โมเดล RandomForest ทำงานจากข้อมูลจริง)
-        df_merged['Is_Internet_Channel'] = (df_merged['Channel'] == 'Internet').astype(int)
-        
-        X_cls = pd.get_dummies(df_merged[['Country', 'List Price']], drop_first=True)
-        y_cls = df_merged['Is_Internet_Channel']
-        
-        X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X_cls, y_cls, test_size=0.2, random_state=42)
-        clf = RandomForestClassifier(n_estimators=20, max_depth=5, random_state=42)
-        clf.fit(X_train_c, y_train_c)
-        acc = f"{accuracy_score(y_test_c, clf.predict(X_test_c)) * 100:.1f}%"
-        
-        X_reg = pd.get_dummies(df_merged[['Country', 'List Price']], drop_first=True)
-        y_reg = df_merged['Sales Amount']
-        
-        X_train_r, X_test_r, y_train_r, y_test_r = train_test_split(X_reg, y_reg, test_size=0.2, random_state=42)
-        reg = RandomForestRegressor(n_estimators=20, max_depth=5, random_state=42)
-        reg.fit(X_train_r, y_train_r)
-        
-        y_pred_r = reg.predict(X_test_r)
-        mae = f"${mean_absolute_error(y_test_r, y_pred_r):.2f}"
-        rmse = f"${root_mean_squared_error(y_test_r, y_pred_r):.2f}"
-        
-        eda_summary = {
-            "total_sales": total_sales_val,
-            "total_customers": total_cust_val,
-            "top_region": top_country,
-            "top_category": top_cat,
-            "anomaly_discovery": f"CRM Observation: Strong transaction density captured within '{top_country}' territory blocks, with order distributions heavily tied to the '{top_cat}' product category pipeline."
-        }
-        
-        ml_results = {
-            "classifier": {
-                "model_name": "RandomForest Classifier",
-                "target": "Predictive CRM Customer Channel Purchase Intent (Internet vs Reseller)",
-                "accuracy": acc,
-                "top_features": ['List Price'] + [col.replace('Country_', '') for col in X_cls.columns[:2]]
-            },
-            "regressor": {
-                "model_name": "RandomForest Regressor",
-                "target": "Sales Amount Volume Estimation Engine",
-                "mae": mae,
-                "rmse": rmse,
-                "top_features": ['List Price'] + [col.replace('Country_', '') for col in X_reg.columns[:2]]
-            }
-        }
-        return eda_summary, ml_results
+    df = clean_data(df)
 
-    except Exception as e:
-        return {"total_sales": "N/A", "total_customers": "N/A", "top_region": "Error", "top_category": "Error", "anomaly_discovery": str(e)}, {
-            "classifier": {"model_name": "Classifier Error", "target": "Data Pipeline Failure", "accuracy": "0%", "top_features": []},
-            "regressor": {"model_name": "Regressor Error", "target": "Data Pipeline Failure", "mae": "0", "rmse": "0", "top_features": []}
-        }
+    return df
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AdventureWorks CRM Live Dashboard</title>
+
+@app.route("/", methods=["GET", "POST"])
+def dashboard():
+
+    df = build_data()
+ 
+    clf, acc, clf_cols = train_classifier(df)
+    reg, mae, rmse, reg_cols = train_regressor(df)
+
+    total_sales = df["Sales Amount"].sum()
+    total_customers = df["CustomerKey"].nunique()
+    total_products = df["ProductKey"].nunique()
+
+    # เจนข้อมูลกลุ่มตัวแปรที่มีจริงทำ Dynamic Dropdown Selection เพื่อป้องกันการพิมพ์ผิด
+    unique_countries = sorted(df["Country"].dropna().unique().tolist())
+    unique_categories = sorted(df["Category"].dropna().unique().tolist())
+
+    country_sales = (
+        df.groupby("Country")
+        ["Sales Amount"]
+        .sum()
+        .reset_index()
+        .sort_values("Sales Amount", ascending=False)
+        .head(10)
+    )
+
+    category_sales = (
+        df.groupby("Category")
+        ["Sales Amount"]
+        .sum()
+        .reset_index()
+        .sort_values("Sales Amount", ascending=False)
+        .head(10)
+    )
+
+    yearly_sales = (
+        df.groupby("Fiscal Year")
+        ["Sales Amount"]
+        .sum()
+        .reset_index()
+    )
+
+    segment = (
+        df.groupby("CustomerKey")
+        ["Sales Amount"]
+        .sum()
+        .reset_index()
+    )
+
+    q1 = segment["Sales Amount"].quantile(0.25)
+    q3 = segment["Sales Amount"].quantile(0.75)
+
+    segment["Segment"] = segment["Sales Amount"].apply(
+        lambda x:
+        "VIP" if x >= q3
+        else "Regular" if x >= q1
+        else "Low Value"
+    )
+
+    segment_chart = (
+        segment["Segment"]
+        .value_counts()
+        .reset_index(name="Count")
+    )
+
+    # ปรับสีกราฟให้เข้าชุด คลีน สบายตา สไตล์โมเดิร์นแดชบอร์ด
+    fig1 = px.bar(
+        country_sales,
+        x="Country",
+        y="Sales Amount",
+        title="Top Revenue Countries",
+        template="plotly_white",
+        color_discrete_sequence=["#3b82f6"]
+    )
+
+    fig2 = px.bar(
+        category_sales,
+        x="Category",
+        y="Sales Amount",
+        title="Top Product Categories",
+        template="plotly_white",
+        color_discrete_sequence=["#10b981"]
+    )
+
+    fig3 = px.line(
+        yearly_sales,
+        x="Fiscal Year",
+        y="Sales Amount",
+        markers=True,
+        title="Revenue Trend over Fiscal Years",
+        template="plotly_white",
+        color_discrete_sequence=["#6366f1"]
+    )
+
+    fig4 = px.pie(
+        segment_chart,
+        names="Segment",
+        values="Count",
+        title="CRM Customer Segments Distribution",
+        hole=0.4,
+        color_discrete_sequence=["#3b82f6", "#6366f1", "#94a3b8"]
+    )
+
+    # สร้าง Block ผลลัพธ์เริ่มต้นและกำหนดตัวแปรให้สัมพันธ์กับฟอร์ม
+    buy_result_html = ""
+    sales_result_html = ""
+    
+    selected_country_buy = unique_countries[0] if unique_countries else ""
+    selected_country_sales = unique_countries[0] if unique_countries else ""
+    selected_category = unique_categories[0] if unique_categories else ""
+    input_price = "150"
+    input_qty = "1"
+
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "buy":
+            selected_country_buy = request.form.get("country")
+            buy_prediction = predict_buy(clf, clf_cols, selected_country_buy)
+            
+            badge_class = "badge-buy" if buy_prediction == "BUY" else "badge-not"
+            buy_result_html = f"""
+            <div style="margin-top: 15px; text-align: center;">
+                <span class="metric-title">Prediction Result:</span><br>
+                <span class="badge {badge_class}">{buy_prediction}</span>
+            </div>
+            """
+
+        if action == "sales":
+            selected_country_sales = request.form.get("country")
+            selected_category = request.form.get("category")
+            input_price = request.form.get("price")
+            input_qty = request.form.get("qty")
+
+            sales_prediction = round(
+                predict_sales(
+                    reg,
+                    reg_cols,
+                    selected_country_sales,
+                    selected_category,
+                    float(input_price),
+                    int(input_qty)
+                ),
+                2
+            )
+
+            if sales_prediction > 5000:
+                recommendation = "💎 Premium Campaign Recommended (High Value Potential)"
+            else:
+                recommendation = "🏷️ Discount/Volume Campaign Recommended (Standard Potential)"
+                
+            sales_result_html = f"""
+            <div style="margin-top: 15px; display: flex; flex-direction: column; align-items: center;">
+                <span class="metric-title">Predicted Sales Amount:</span>
+                <span class="metric" style="font-size:28px; color:#0ea5e9; margin-bottom:10px;">${sales_prediction:,.2f}</span>
+                <div class="badge-recom">{recommendation}</div>
+            </div>
+            """
+    
+    # เจนตารางตัวเลือก Dropdowns สัมพันธ์กับค่าที่เคยกดเลือก
+    country_options_buy = "".join([f'<option value="{c}" {"selected" if c==selected_country_buy else ""}>{c}</option>' for c in unique_countries])
+    country_options_sales = "".join([f'<option value="{c}" {"selected" if c==selected_country_sales else ""}>{c}</option>' for c in unique_countries])
+    category_options = "".join([f'<option value="{c}" {"selected" if c==selected_category else ""}>{c}</option>' for c in unique_categories])
+
+    # ซ้อนปีกกาคู่ {{}} ในจุดที่เป็นสไตล์ CSS เพื่อให้ฟังก์ชัน .format() ทำงานได้อย่างไร้รอยต่อ
+    html = """
+    <html>
+    <head>
+    <title>AdventureWorks CRM Dashboard</title>
     <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 0; }
-        .header { background-color: #0f172a; color: #fff; padding: 25px; text-align: center; }
-        .header h1 { margin: 0; font-size: 26px; }
-        .header p { margin: 5px 0 0 0; color: #94a3b8; font-size: 14px; }
-        .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 20px; border: 1px solid #e2e8f0; }
-        .card h2 { margin-top: 0; color: #0f172a; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; font-size: 18px; }
-        .metric { font-size: 28px; font-weight: bold; color: #2563eb; margin: 10px 0; }
-        .label { font-size: 13px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
-        .feature-tag { display: inline-block; background-color: #f1f5f9; color: #475569; padding: 4px 10px; border-radius: 4px; font-size: 12px; margin: 4px; font-weight: bold; border: 1px solid #cbd5e1; }
-        .footer { text-align: center; margin-top: 50px; padding: 20px; color: #94a3b8; font-size: 13px; }
-        .badge { background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; float: right; }
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background:#f8fafc; margin:0; color:#1e293b; }}
+        header {{ background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color:white; text-align:center; padding:40px 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
+        header h1 {{ margin: 0; font-size: 2.4rem; font-weight: 700; letter-spacing: -0.04em; }}
+        header p {{ margin: 8px 0 0 0; opacity: 0.75; font-size: 1.05rem; font-weight: 400; }}
+        .container {{ max-width: 1440px; margin: auto; padding: 25px 20px; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 25px; }}
+        .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(550px, 1fr)); gap: 20px; margin-bottom: 25px; }}
+        @media (max-width: 768px) {{ .chart-grid {{ grid-template-columns: 1fr; }} }}
+        .card {{ background: white; padding: 24px; border-radius: 14px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02), 0 2px 4px -1px rgba(0,0,0,0.02); border: 1px solid #e2e8f0; }}
+        .metric-title {{ font-size: 0.85rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }}
+        .metric {{ font-size: 32px; font-weight: 700; color: #0f172a; }}
+        .form-group {{ margin-bottom: 14px; display: flex; flex-direction: column; }}
+        label {{ font-weight: 600; font-size: 0.85rem; color: #475569; margin-bottom: 6px; }}
+        select, input {{ padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.95rem; background-color: #f8fafc; color:#334155; outline: none; transition: all 0.2s; }}
+        select:focus, input:focus {{ border-color: #3b82f6; background-color: white; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }}
+        button {{ padding: 12px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: background 0.2s; margin-top: 5px; }}
+        button:hover {{ background: #2563eb; }}
+        .badge {{ display: inline-block; padding: 8px 16px; border-radius: 30px; font-weight: 700; font-size: 0.95rem; margin-top: 8px; letter-spacing: 0.05em; }}
+        .badge-buy {{ background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }}
+        .badge-not {{ background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }}
+        .badge-recom {{ background: #f0f9ff; color: #0369a1; border: 1px dashed #bae6fd; font-size: 0.92rem; padding: 12px; border-radius: 8px; width: 100%; text-align: center; font-weight: 600; margin-top:5px; }}
+        .eval-item {{ display: flex; justify-content: space-between; border-bottom: 1px solid #f1f5f9; padding: 12px 0; font-size: 0.95rem; }}
+        .eval-item:last-child {{ border: none; }}
     </style>
-</head>
-<body>
+    </head>
+    <body>
 
-    <div class="header">
+    <header>
         <h1>AdventureWorks CRM Analytics Dashboard</h1>
-        <p>Live Python Engine Execution (RandomForest) • Executed dynamically over your exact Data Schema</p>
-    </div>
+        <p>Advanced Marketing Intelligence System • Powered by Random Forest</p>
+    </header>
 
     <div class="container">
-        <h2>1. Exploratory Data Analysis (EDA) From Live Dataset</h2>
         <div class="grid">
             <div class="card">
-                <h2>Business Metrics Summary</h2>
-                <div class="label">Total Processed Sales Volume</div>
-                <div class="metric">{{ eda.total_sales }}</div>
-                <div class="label">Total Customer Analytics Base</div>
-                <div class="metric" style="color: #10b981;">{{ eda.total_customers }}</div>
+                <div class="metric-title">Total Sales Revenue</div>
+                <div class="metric">${total_sales:,.0f}</div>
             </div>
             <div class="card">
-                <h2>Spatio-Temporal Insights</h2>
-                <p><strong>Core Geographic Market:</strong> {{ eda.top_region }}</p>
-                <p><strong>Dominant Product Category:</strong> {{ eda.top_category }}</p>
+                <div class="metric-title">Active Customers</div>
+                <div class="metric">{total_customers:,}</div>
             </div>
             <div class="card">
-                <h2>CRM Discovery Anomaly</h2>
-                <p style="background-color: #fef3c7; padding: 12px; border-left: 4px solid #d97706; border-radius: 4px; font-size: 14px;">
-                    {{ eda.anomaly_discovery }}
-                </p>
+                <div class="metric-title">Product Portfolio</div>
+                <div class="metric">{total_products:,}</div>
+            </div>
+            <div class="card">
+                <div class="metric-title">Model Classifier Accuracy</div>
+                <div class="metric" style="color: #10b981;">{acc_val:.2f}%</div>
             </div>
         </div>
 
-        <h2>2. Live Predictive Modeling (RandomForest Engine Evaluation)</h2>
-        <div class="grid">
-            <div class="card">
-                <h2>{{ ml.classifier.model_name }} <span class="badge">Classifier</span></h2>
-                <p class="label">Target Objective:</p>
-                <p style="font-size:14px; font-weight:500;">{{ ml.classifier.target }}</p>
-                <div class="label">Testing Model Accuracy:</div>
-                <div class="metric" style="color: #6366f1;">{{ ml.classifier.accuracy }}</div>
-                <p class="label">Top Customer Predictors (CRM Importance):</p>
-                {% for feature in ml.classifier.top_features %}
-                    <span class="feature-tag">{{ feature }}</span>
-                {% endfor %}
+        <div class="chart-grid">
+            <div class="card">{chart1}</div>
+            <div class="card">{chart2}</div>
+        </div>
+        <div class="chart-grid">
+            <div class="card">{chart3}</div>
+            <div class="card">{chart4}</div>
+        </div>
+
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap:25px;">
+            <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
+                <div>
+                    <h2 style="margin-top:0; color:#0f172a; font-size:1.3rem;">🎯 Target Prospect Classification</h2>
+                    <p style="color:#64748b; font-size:0.85rem; margin-bottom:20px;">Predict whether a regional customer base has high-purchasing potential.</p>
+                    <form method="POST">
+                        <div class="form-group">
+                            <label>Target Region / Country</label>
+                            <select name="country">
+                                {country_options_buy}
+                            </select>
+                        </div>
+                        <button type="submit" name="action" value="buy" style="width:100%;">Execute Classifier Model</button>
+                    </form>
+                </div>
+                {buy_result_html}
             </div>
 
             <div class="card">
-                <h2>{{ ml.regressor.model_name }} <span class="badge" style="background-color: #e0f2fe; color: #0369a1;">Regressor</span></h2>
-                <p class="label">Target Objective:</p>
-                <p style="font-size:14px; font-weight:500;">{{ ml.regressor.target }}</p>
-                <div style="display: flex; gap: 20px; margin: 15px 0;">
-                    <div>
-                        <div class="label">Mean Absolute Error (MAE):</div>
-                        <div style="font-size: 20px; font-weight:bold; color:#ef4444;">{{ ml.regressor.mae }}</div>
+                <h2 style="margin-top:0; color:#0f172a; font-size:1.3rem;">📊 Revenue & Demand Forecasting</h2>
+                <p style="color:#64748b; font-size:0.85rem; margin-bottom:20px;">Estimate expected sales metrics to optimize corporate resource allocation.</p>
+                <form method="POST">
+                    <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom:0; padding:0;">
+                        <div class="form-group">
+                            <label>Country</label>
+                            <select name="country">
+                                {country_options_sales}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Product Category</label>
+                            <select name="category">
+                                {category_options}
+                            </select>
+                        </div>
                     </div>
-                    <div>
-                        <div class="label">Root Mean Squared Error (RMSE):</div>
-                        <div style="font-size: 20px; font-weight:bold; color:#ef4444;">{{ ml.regressor.rmse }}</div>
+                    <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom:0; padding:0;">
+                        <div class="form-group">
+                            <label>List Price ($)</label>
+                            <input type="number" name="price" value="{input_price}" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>Order Quantity</label>
+                            <input type="number" name="qty" value="{input_qty}">
+                        </div>
+                    </div>
+                    <button type="submit" name="action" value="sales" style="width:100%; background:#4f46e5;">Forecast Revenue</button>
+                </form>
+                {sales_result_html}
+            </div>
+        </div>
+
+        <div class="card" style="background: #f8fafc; margin-top:10px; border: 1px dashed #cbd5e1;">
+            <h2 style="margin-top:0; color:#0f172a; font-size:1.15rem;">📝 Machine Learning Evaluation & Business Value Summary</h2>
+            <div class="grid" style="grid-template-columns: 1fr 1.5fr; gap: 30px; margin-bottom:0;">
+                <div>
+                    <div class="eval-item">
+                        <strong>Classification Accuracy:</strong>
+                        <span style="color:#10b981; font-weight:700;">{acc_val:.2f}%</span>
+                    </div>
+                    <div class="eval-item">
+                        <strong>Regressor MAE:</strong>
+                        <span style="color:#f59e0b; font-weight:700;">{mae_val:,.2f}</span>
+                    </div>
+                    <div class="eval-item">
+                        <strong>Regressor RMSE:</strong>
+                        <span style="color:#ef4444; font-weight:700;">{rmse_val:,.2f}</span>
                     </div>
                 </div>
-                <p class="label">Key Target Features Weights:</p>
-                {% for feature in ml.regressor.top_features %}
-                    <span class="feature-tag">{{ feature }}</span>
-                {% endfor %}
+                <div style="font-size: 0.88rem; color: #475569; line-height: 1.6;">
+                    <strong>💡 CRM Strategic Core Insights:</strong><br>
+                    • <strong>Automated Campaigning:</strong> The model automatically segments and targets high-potential customer bases within individual countries, significantly reducing generalized marketing waste and maximizing ROI.<br>
+                    • <strong>Risk Management & Operations:</strong> Statistical deviation metrics (MAE/RMSE) serve as data-driven benchmarks for safety stock optimization, preventing overproduction and inventory holding costs in high-volatility markets.
+                </div>
             </div>
         </div>
     </div>
+    </body>
+    </html>
+    """.format(
+        total_sales=total_sales,
+        total_customers=total_customers,
+        total_products=total_products,
+        acc_val=acc * 100,
+        chart1=fig1.to_html(full_html=False),
+        chart2=fig2.to_html(full_html=False),
+        chart3=fig3.to_html(full_html=False),
+        chart4=fig4.to_html(full_html=False),
+        buy_result_html=buy_result_html,
+        sales_result_html=sales_result_html,
+        mae_val=mae,
+        rmse_val=rmse,
+        country_options_buy=country_options_buy,
+        country_options_sales=country_options_sales,
+        category_options=category_options,
+        input_price=input_price,
+        input_qty=input_qty
+    )
 
-    <div class="footer">
-        AdventureWorks Sales Dashboard Project • Designed for Presentation & Railway Deployment
-    </div>
+    return html
 
-</body>
-</html>
-"""
 
-@app.route('/')
-def home():
-    eda, ml = process_data_and_train()
-    return render_template_string(HTML_TEMPLATE, eda=eda, ml=ml)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=True
+    )
