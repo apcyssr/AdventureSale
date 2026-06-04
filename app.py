@@ -384,9 +384,10 @@ def dashboard():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    # Hugging Face จะส่งพอร์ตมาให้ผ่าน os.environ ถ้าไม่มีให้สลับไปใช้ 7860
+    port = int(os.environ.get("PORT", 7860))
     app.run(
         host="0.0.0.0",
         port=port,
-        debug=True
+        debug=False # ขึ้น Production ควรปิด debug ครับ
     )
