@@ -2,6 +2,7 @@ import os
 import pickle
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 from flask import Flask, request
 
@@ -17,12 +18,10 @@ from prediction import (
 
 app = Flask(__name__)
 
-# URL ตรงไปยังโฟลเดอร์หลักของ GitHub Repository
 RAW = "https://raw.githubusercontent.com/apcyssr/AdventureSale/main/"
 
 
 def load(name):
-    # ดึงข้อมูลจาก URL หลักตรงๆ ไม่ผ่านโฟลเดอร์ย่อย
     return pd.read_csv(RAW + name)
 
 
@@ -51,44 +50,61 @@ def build_data():
     )
 
     df = clean_data(df)
+
+    # Remove placeholder customers from analytics
+    if "Customer ID" in df.columns:
+        df = df[
+            ~df["Customer ID"].astype(str).str.contains(
+                "Not Applicable", na=False
+            )
+        ]
+    if "Customer" in df.columns:
+        df = df[
+            ~df["Customer"].astype(str).str.contains(
+                "Not Applicable", na=False
+            )
+        ]
+
     return df
 
 
 @app.route("/", methods=["GET", "POST"])
 def dashboard():
-    try:
-        df = build_data()
-    except Exception as e:
-        return f"<h3>Database Connection Error: ไม่สามารถโหลดข้อมูลจาก GitHub ได้</h3><p>{str(e)}</p>"
+    df = build_data()
 
     # ========================================================
-    # 💾 โหลดไฟล์โมเดลสำเร็จรูปจากโฟลเดอร์หลัก (Root Directory)
+    # 💾 โฮสต์และโหลดโมเดลสำเร็จรูปจากไฟล์เพื่อเซฟหน่วยความจำ (RAM) บน Render
     # ========================================================
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
-    try:
-        # 1. โหลดไฟล์ Classifier จากโฟลเดอร์หลักตรงๆ
-        with open(os.path.join(BASE_DIR, "classifier.pkl"), "rb") as f:
-            clf = pickle.load(f)
-        with open(os.path.join(BASE_DIR, "clf_cols.pkl"), "rb") as f:
-            clf_cols = pickle.load(f)
-        acc = 0.5519  
+    # 1. โหลดไฟล์ Classifier (.pkl) และกำหนดค่า Accuracy ประเมินผลจริงของคุณ
+    with open(os.path.join(BASE_DIR, "models/classifier.pkl"), "rb") as f:
+        clf = pickle.load(f)
+    with open(os.path.join(BASE_DIR, "models/clf_cols.pkl"), "rb") as f:
+        clf_cols = pickle.load(f)
+    acc = 0.5519  # แมปผลลัพธ์จริงจากการรันโมเดลสำเร็จรูปบนเครื่องคอมพิวเตอร์ของคุณ
+    feature_importance_df = pd.DataFrame({
+        "Feature": clf_cols,
+        "Importance": clf.feature_importances_
+    }).sort_values(
+        "Importance",
+        ascending=False
+    ).head(10)
 
-        # 2. โหลดไฟล์ Regressor จากโฟลเดอร์หลักตรงๆ
-        with open(os.path.join(BASE_DIR, "regressor.pkl"), "rb") as f:
-            reg = pickle.load(f)
-        with open(os.path.join(BASE_DIR, "reg_cols.pkl"), "rb") as f:
-            reg_cols = pickle.load(f)
-        mae = 28.44   
-        rmse = 84.92  
-    except Exception as e:
-        return f"<h3>Model Loading Error: ไม่พบไฟล์โมเดล .pkl ในโฟลเดอร์หลัก</h3><p>{str(e)}</p>"
+    # 2. โหลดไฟล์ Regressor (.pkl) และกำหนดค่าความคลาดเคลื่อนจริงของคุณ
+    with open(os.path.join(BASE_DIR, "models/regressor.pkl"), "rb") as f:
+        reg = pickle.load(f)
+    with open(os.path.join(BASE_DIR, "models/reg_cols.pkl"), "rb") as f:
+        reg_cols = pickle.load(f)
+    mae = 28.44   # แมปผลลัพธ์จริงจากการรันโมเดลสำเร็จรูปบนเครื่องคอมพิวเตอร์ของคุณ
+    rmse = 84.92  # แมปผลลัพธ์จริงจากการรันโมเดลสำเร็จรูปบนเครื่องคอมพิวเตอร์ของคุณ
     # ========================================================
 
     total_sales = df["Sales Amount"].sum()
     total_customers = df["CustomerKey"].nunique()
     total_products = df["ProductKey"].nunique()
 
+    # เจนข้อมูลกลุ่มตัวแปรที่มีจริงทำ Dynamic Dropdown Selection เพื่อป้องกันการพิมพ์ผิด
     unique_countries = sorted(df["Country"].dropna().unique().tolist())
     unique_categories = sorted(df["Category"].dropna().unique().tolist())
 
@@ -134,12 +150,123 @@ def dashboard():
         else "Low Value"
     )
 
-    segment_chart = (
-        segment["Segment"]
-        .value_counts()
-        .reset_index(name="Count")
+
+    clv = total_sales / max(total_customers,1)
+
+    q2 = segment["Sales Amount"].quantile(0.50)
+    def customer_segment(x):
+        if x >= q3:
+            return "VIP"
+        elif x >= q2:
+            return "Loyal"
+        elif x >= q1:
+            return "Regular"
+        return "At Risk"
+
+    segment["Segment"] = segment["Sales Amount"].apply(customer_segment)
+
+    top_customers = (
+        df.groupby(
+            ["Customer ID", "Customer"]
+        )["Sales Amount"]
+        .sum()
+        .reset_index()
+        .sort_values(
+            "Sales Amount",
+            ascending=False
+        )
     )
 
+    top_customers = top_customers[
+        (top_customers["Customer ID"] != "[Not Applicable]") &
+        (top_customers["Customer"] != "[Not Applicable]")
+    ]
+
+    top_customers = top_customers.head(10)
+
+    top_country = country_sales.iloc[0]["Country"]
+    top_country_sales = country_sales.iloc[0]["Sales Amount"]
+    top_category = category_sales.iloc[0]["Category"]
+    vip_count = (segment["Segment"]=="VIP").sum()
+
+    executive_insight = f"""
+    <ul>
+    <li><b>{top_country}</b> contributes the largest share of company revenue (${top_country_sales:,.0f}).</li>
+    <li><b>{top_category}</b> remains the highest-performing product category.</li>
+    <li><b>{vip_count:,}</b> customers are classified as VIP and represent the most valuable customer segment.</li>
+    <li>CRM strategy should prioritize customer retention and personalized marketing campaigns.</li>
+    </ul>
+    """
+
+    recommendations=[]
+    if vip_count > total_customers*0.2:
+        recommendations.append("Expand loyalty programs for VIP customers.")
+    recommendations.append(f"Prioritize marketing in {top_country}.")
+    recommendations.append(f"Increase focus on {top_category} category.")
+    recommendation_html="".join([f"<li>{r}</li>" for r in recommendations])
+
+    top_customers = (
+    df.groupby(
+        ["Customer ID", "Customer"]
+    )["Sales Amount"]
+    .sum()
+    .reset_index()
+    .sort_values(
+        "Sales Amount",
+        ascending=False
+    )
+    .head(10)
+    )
+
+    fig_customer = go.Figure(
+        data=[
+            go.Table(
+                header=dict(
+                    values=[
+                        "Customer ID",
+                        "Customer Name",
+                        "Revenue ($)"
+                    ],
+                    fill_color="#1e293b",
+                    font=dict(
+                        color="white",
+                        size=12
+                    ),
+                    align="left"
+                ),
+                cells=dict(
+                    values=[
+                        top_customers["Customer ID"],
+                        top_customers["Customer"],
+                        top_customers["Sales Amount"]
+                        .map(lambda x: f"${x:,.0f}")
+                    ],
+                    align="left",
+                    height=30
+                )
+            )
+        ]
+    )
+
+    fig_customer.update_layout(
+        margin=dict(
+            l=0,
+            r=0,
+            t=10,
+            b=0
+        ),
+        height=350
+    )
+    
+    top_country = country_sales.iloc[0]["Country"]
+
+    segment_chart = (
+            segment["Segment"]
+            .value_counts()
+            .reset_index(name="Count")
+        )
+
+    # ปรับสีกราฟให้เข้าชุด คลีน สบายตา สไตล์โมเดิร์นแดชบอร์ด
     fig1 = px.bar(
         country_sales,
         x="Country",
@@ -149,6 +276,10 @@ def dashboard():
         color_discrete_sequence=["#3b82f6"]
     )
 
+    fig1.update_layout(
+        xaxis_tickangle=-30
+    )
+
     fig2 = px.bar(
         category_sales,
         x="Category",
@@ -156,6 +287,10 @@ def dashboard():
         title="Top Product Categories",
         template="plotly_white",
         color_discrete_sequence=["#10b981"]
+    )
+
+    fig2.update_layout(
+        xaxis_tickangle=-25
     )
 
     fig3 = px.line(
@@ -168,15 +303,44 @@ def dashboard():
         color_discrete_sequence=["#6366f1"]
     )
 
+    fig3.update_layout(
+        hovermode="x unified",
+        xaxis=dict(rangeslider=dict(visible=True))
+    )
+
+    fig3.update_traces(
+        hovertemplate="Revenue: $%{y:,.0f}<extra></extra>"
+    )
+
     fig4 = px.pie(
         segment_chart,
         names="Segment",
         values="Count",
         title="CRM Customer Segments Distribution",
         hole=0.4,
-        color_discrete_sequence=["#3b82f6", "#6366f1", "#94a3b8"]
+        color_discrete_sequence=[
+            "#2563eb",
+            "#7c3aed",
+            "#10b981",
+            "#f59e0b"
+        ]
     )
 
+    fig5 = px.bar(
+        feature_importance_df,
+        x="Importance",
+        y="Feature",
+        orientation="h",
+        title="Country Impact on Purchase Probability",
+        template="plotly_white",
+        color_discrete_sequence=["#8b5cf6"]
+    )
+
+    fig5.update_layout(
+        yaxis=dict(categoryorder="total ascending")
+    )
+
+    # สร้าง Block ผลลัพธ์เริ่มต้นและกำหนดตัวแปรให้สัมพันธ์กับฟอร์ม
     buy_result_html = ""
     sales_result_html = ""
     
@@ -232,10 +396,12 @@ def dashboard():
             </div>
             """
     
+    # เจนตารางตัวเลือก Dropdowns สัมพันธ์กับค่าที่เคยกดเลือก
     country_options_buy = "".join([f'<option value="{c}" {"selected" if c==selected_country_buy else ""}>{c}</option>' for c in unique_countries])
     country_options_sales = "".join([f'<option value="{c}" {"selected" if c==selected_country_sales else ""}>{c}</option>' for c in unique_countries])
     category_options = "".join([f'<option value="{c}" {"selected" if c==selected_category else ""}>{c}</option>' for c in unique_categories])
 
+    # ส่งออกหน้าโครงสร้าง HTML โดยใช้ f-string แสดงตัวแปรแบบเรียลไทม์
     html = f"""
     <html>
     <head>
@@ -267,12 +433,10 @@ def dashboard():
     </style>
     </head>
     <body>
-
     <header>
         <h1>AdventureWorks CRM Analytics Dashboard</h1>
-        <p>Advanced Marketing Intelligence System • Powered by Random Forest</p>
+        <p>CRM Analytics & Predictive Intelligence Platform • Powered by Random Forest</p>
     </header>
-
     <div class="container">
         <div class="grid">
             <div class="card">
@@ -288,20 +452,42 @@ def dashboard():
                 <div class="metric">{total_products:,}</div>
             </div>
             <div class="card">
-                <div class="metric-title">Model Classifier Accuracy</div>
-                <div class="metric" style="color: #10b981;">{acc * 100:.2f}%</div>
+                <div class="metric-title">ML Engine</div>
+                <div class="metric" style="color: #10b981;">Random Forest</div>
             </div>
         </div>
-
-        <div class="chart-grid">
-            <div class="card">{fig1.to_html(full_html=False)}</div>
-            <div class="card">{fig2.to_html(full_html=False)}</div>
+        <div class="card"><h2>📈 Executive Insights</h2>{executive_insight}</div>
+        <div class="grid">
+            <div class="card"><div class="metric-title">Customer Lifetime Value</div><div class="metric">${clv:,.0f}</div></div>
+            <div class="card"><h3>🤖 AI Recommendations</h3><ul>{recommendation_html}</ul></div>
+        </div>
+        <div class="card">
+            <h3>🏆 Top 10 Customers</h3>
+            {fig_customer.to_html(
+                full_html=False,
+                config={"displayModeBar": False}
+            )}
         </div>
         <div class="chart-grid">
-            <div class="card">{fig3.to_html(full_html=False)}</div>
-            <div class="card">{fig4.to_html(full_html=False)}</div>
+            <div class="card">{fig1.to_html(full_html=False, config={"displayModeBar": False})}</div>
+            <div class="card">{fig2.to_html(full_html=False, config={"displayModeBar": False})}</div>
         </div>
-
+        <div class="chart-grid">
+            <div class="card">
+                {fig3.to_html(full_html=False,
+                config={"displayModeBar": False})}
+            </div>
+            <div class="card">
+                {fig4.to_html(full_html=False,
+                config={"displayModeBar": False})}
+            </div>
+        </div>
+        <div class="card">
+            {fig5.to_html(
+                full_html=False,
+                config={"displayModeBar": False}
+            )}
+        </div>
         <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap:25px;">
             <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
                 <div>
@@ -319,7 +505,6 @@ def dashboard():
                 </div>
                 {buy_result_html}
             </div>
-
             <div class="card">
                 <h2 style="margin-top:0; color:#0f172a; font-size:1.3rem;">📊 Revenue & Demand Forecasting</h2>
                 <p style="color:#64748b; font-size:0.85rem; margin-bottom:20px;">Estimate expected sales metrics to optimize corporate resource allocation.</p>
@@ -353,28 +538,27 @@ def dashboard():
                 {sales_result_html}
             </div>
         </div>
-
         <div class="card" style="background: #f8fafc; margin-top:10px; border: 1px dashed #cbd5e1;">
             <h2 style="margin-top:0; color:#0f172a; font-size:1.15rem;">📝 Machine Learning Evaluation & Business Value Summary</h2>
             <div class="grid" style="grid-template-columns: 1fr 1.5fr; gap: 30px; margin-bottom:0;">
                 <div>
                     <div class="eval-item">
                         <strong>Classification Accuracy:</strong>
-                        <span style="color:#10b981; font-weight:700;">{acc * 100:.2f}%</span>
+                        <span style="color:#10b981; font-weight:700;">{acc:.1%}</span>
                     </div>
                     <div class="eval-item">
-                        <strong>Regressor MAE:</strong>
+                        <strong>Sales Forecast MAE:</strong>
                         <span style="color:#f59e0b; font-weight:700;">{mae:,.2f}</span>
                     </div>
                     <div class="eval-item">
-                        <strong>Regressor RMSE:</strong>
+                        <strong>Sales Forecast RMSE:</strong>
                         <span style="color:#ef4444; font-weight:700;">{rmse:,.2f}</span>
                     </div>
                 </div>
                 <div style="font-size: 0.88rem; color: #475569; line-height: 1.6;">
                     <strong>💡 CRM Strategic Core Insights:</strong><br>
-                    • <strong>Automated Campaigning:</strong> The model automatically segments and targets high-potential customer bases within individual countries, significantly reducing generalized marketing waste.<br>
-                    • <strong>Risk Management & Operations:</strong> Statistical deviation metrics serve as data-driven benchmarks for safety stock optimization, preventing overproduction.
+                    • <strong>Automated Campaigning:</strong> The model automatically segments and targets high-potential customer bases within individual countries, significantly reducing generalized marketing waste and maximizing ROI.<br>
+                    • <strong>Risk Management & Operations:</strong> Statistical deviation metrics (MAE/RMSE) serve as data-driven benchmarks for safety stock optimization, preventing overproduction and inventory holding costs in high-volatility markets.
                 </div>
             </div>
         </div>
@@ -387,9 +571,8 @@ def dashboard():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
     app.run(
         host="0.0.0.0",
-        port=port,
+        port=7860,
         debug=False
     )
