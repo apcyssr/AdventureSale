@@ -38,7 +38,8 @@ Predict expected sales amount.
 
 ## Deployment
 
-Railway Cloud Platform
+Hugging Face
+https://huggingface.co/spaces/apichaya72/adventure-works-crm
 
 ## Author
 
